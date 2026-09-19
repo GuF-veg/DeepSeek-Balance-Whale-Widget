@@ -151,8 +151,17 @@ try {
 } catch (err) {}
 
 var MIN_SCALE = 0.6
-var MAX_SCALE = 2.5
-var STEP = 0.1
+// 关闭自动调整时旧档位 15 = scale 2.0 = 250px×2 = 500px，现作为上限（新档位 20）
+var MAX_SCALE = 2.0
+var STEP = (MAX_SCALE - MIN_SCALE) / 19
+function snapScale(v) {
+  var n = Number(v)
+  if (!isFinite(n)) n = MIN_SCALE
+  var i = Math.round((n - MIN_SCALE) / STEP)
+  if (i < 0) i = 0
+  if (i > 19) i = 19
+  return MIN_SCALE + i * STEP
+}
 var CLICK_SQ = 9
 var REFRESH_MS = 60000
 var CHANGE_MS = 900
@@ -166,7 +175,9 @@ var GIF_URL = '/dsh-whale/rua.gif'
 var BUBBLE_URL = '/dsh-whale/bubble.json'
 
 var css = [
-  '.dshwv-root{position:fixed;right:0;bottom:0;--dshw-scale:1;--dshw-base:clamp(122px,calc(min(250px,min(100vw,100vh) * 0.28) * var(--dshw-scale)),625px);width:var(--dshw-base);height:var(--dshw-base);pointer-events:none;user-select:none;-webkit-user-select:none;z-index:9999;font-family:inherit;transition:left .16s ease,top .16s ease,transform .3s ease}',
+  '.dshwv-root{position:fixed;right:0;bottom:0;--dshw-scale:1;--dshw-fit:min(250px,min(100vw,100vh) * 0.28);--dshw-base:clamp(122px,calc(var(--dshw-fit) * var(--dshw-scale)),500px);width:var(--dshw-base);height:var(--dshw-base);pointer-events:none;user-select:none;-webkit-user-select:none;z-index:9999;font-family:inherit;transition:left .16s ease,top .16s ease,transform .3s ease}',
+  // 关闭「自动调整大小」后锁定为大视口底数 250px，边长只跟 --dshw-scale 走
+  '.dshwv-root.dshwv-size-fixed{--dshw-fit:250px}',
   // v634 移动端:去掉浏览器「点击高亮」方块——它画在可点元素的矩形包围盒上,
   // 泡泡的内联 SVG 形状尤其明显;同时禁掉 iOS 长按系统菜单/放大镜。
   // 只作用于挂件自身的 dshwv- 元素(该属性可继承,后代一并覆盖),不影响 DSH 页面自身的高亮。
@@ -718,7 +729,7 @@ var scaleInput = document.createElement('input')
 scaleInput.type = 'range'
 scaleInput.min = String(MIN_SCALE)
 scaleInput.max = String(MAX_SCALE)
-scaleInput.step = '0.1'
+scaleInput.step = String(STEP)
 scaleInput.className = 'dshwv-range'
 scaleInput.value = '1.5'
 var scaleNumber = document.createElement('input')
@@ -727,7 +738,7 @@ scaleNumber.min = '1'
 scaleNumber.max = '20'
 scaleNumber.step = '1'
 scaleNumber.className = 'dshwv-number'
-scaleNumber.value = '10'
+scaleNumber.value = '13'
 scaleInput.addEventListener('pointerdown', function () { root.style.transition = 'none' })
 scaleInput.addEventListener('input', function () { setScale(scaleInput.value) })
 scaleInput.addEventListener('change', function () { root.style.transition = ''; try { refreshFlip() } catch (err) {} })
@@ -1212,6 +1223,15 @@ var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))
 row1.appendChild(scaleInput)
 row1.appendChild(scaleNumber)
+var autoSizeToggle = document.createElement('input')
+autoSizeToggle.type = 'checkbox'
+autoSizeToggle.className = 'dshwv-check'
+autoSizeToggle.checked = true
+autoSizeToggle.title = '开启后挂件随窗口短边缩放；关闭后大小只由「大小」滑块决定'
+autoSizeToggle.addEventListener('change', function () { setAutoSize(autoSizeToggle.checked) })
+var rowAutoSize = menuRow()
+rowAutoSize.appendChild(menuLabel('自动调整大小'))
+rowAutoSize.appendChild(autoSizeToggle)
 var row2 = menuRow()
 row2.appendChild(menuLabel('音效'))
 row2.appendChild(audioGroupBtn)
@@ -1292,6 +1312,7 @@ roleImportBtn.addEventListener('click', function (e) { e.stopPropagation(); role
 roleFileInput.addEventListener('change', function () { onRoleFileChosen(roleFileInput) })
 menuBox.appendChild(rowRole)
 menuBox.appendChild(row1)
+menuBox.appendChild(rowAutoSize)
 menuBox.appendChild(row2)
 menuBox.appendChild(row3)
 menuBox.appendChild(row6)
@@ -12369,6 +12390,7 @@ var costBubbleActive = false
 var scrollGapOn = false
 var scrollGapPx = 17
 var menuBtnHide = false // 主菜单开关:隐藏挂件菜单按钮,改为右键小鲸鱼唤出菜单
+var autoSize = true // 默认随视口短边缩放；关闭后边长只跟「大小」滑块
 // —— v734（issue #97 / #88）：设置保存的「防覆盖 + 失败可见」——
 // #97 根因：首次 GET 还没落地就 PUT，会把内存里的默认值整包写进服务端（重启后设置被洗成默认值）。
 // #88 根因：这个 PUT 以前是 fire-and-forget，服务端 500 / {ok:false} 完全没人读。
@@ -12402,7 +12424,7 @@ function configSaveFailNotice(detail) {
     '<br>已自动重试一次。若持续失败，请检查 DSH 数据目录是否可写。')
 }
 function configPayload() {
-  return JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide })
+  return JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide, autoSize: autoSize })
 }
 // 真正的 PUT：读响应 → 失败（网络异常 / HTTP!=200 / {ok:false}）静默重试一次 → 仍失败才提示
 function configPut(payload, retried) {
@@ -12535,10 +12557,18 @@ function setMenuBtnHide(v) {
 function scaleToDisplay(s) {
   return Math.round((s - MIN_SCALE) / ((MAX_SCALE - MIN_SCALE) / 19)) + 1
 }
-function setScale(v) {
-  var next = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, Number(v))) * 10) / 10
-  // 缩放测量需要 left/top 立即到位：临时禁用过渡（滚轮/数字框路径没有
-  // 滑块 pointerdown 的 transition:none，否则 r2 测的是过渡起点导致错锚点）
+function applyAutoSizeClass() {
+  root.classList.toggle('dshwv-size-fixed', !autoSize)
+  if (autoSizeToggle) autoSizeToggle.checked = autoSize
+}
+function setAutoSize(v) {
+  autoSize = !!v
+  // 缩放测量需要 left/top 立即到位：临时禁用过渡，否则 r2 测的是过渡起点导致错锚点
+  keepSizeAnchor(function () { applyAutoSizeClass() })
+  saveConfig()
+  try { refreshFlip() } catch (err) {}
+}
+function keepSizeAnchor(applyFn) {
   var prevTrans = root.style.transition
   root.style.transition = 'none'
   var rect = root.getBoundingClientRect()
@@ -12548,11 +12578,7 @@ function setScale(v) {
   // its corner while scaling.
   var fx = state.flip ? rect.left : rect.right
   var fy = rect.bottom
-  state.scale = next
-  root.style.setProperty('--dshw-scale', String(next))
-  scaleInput.value = String(next)
-  scaleNumber.value = String(scaleToDisplay(next))
-  saveConfig()
+  applyFn()
   // keep the corner fixed while resizing; the position correction applies
   // instantly because the caller disables the transition for the whole drag
   var r2 = root.getBoundingClientRect()
@@ -12570,6 +12596,16 @@ function setScale(v) {
   requestAnimationFrame(function () {
     root.style.transition = prevTrans
   })
+}
+function setScale(v) {
+  var next = snapScale(v)
+  keepSizeAnchor(function () {
+    state.scale = next
+    root.style.setProperty('--dshw-scale', String(next))
+  })
+  scaleInput.value = String(next)
+  scaleNumber.value = String(scaleToDisplay(next))
+  saveConfig()
 }
 function setVol(v) {
   var next = Math.round(Math.min(1, Math.max(0, Number(v))) * 100) / 100
@@ -14707,11 +14743,15 @@ loadBubbleCfg()
 fetch(SIZE_URL, { cache: 'no-store' })
   .then(function (r) { return r.json() })
   .then(function (d) {
-    if (d && typeof d.scale === 'number' && d.scale >= MIN_SCALE - 0.1 && d.scale <= MAX_SCALE + 0.1) {
-      state.scale = d.scale
-      root.style.setProperty('--dshw-scale', String(d.scale))
-      scaleInput.value = String(d.scale)
-      scaleNumber.value = String(scaleToDisplay(d.scale))
+    if (d && typeof d.autoSize === 'boolean') autoSize = d.autoSize
+    applyAutoSizeClass()
+    if (d && typeof d.scale === 'number' && isFinite(d.scale)) {
+      var s = Math.min(MAX_SCALE, Math.max(MIN_SCALE, d.scale))
+      if (s !== d.scale) configSavePending = true
+      state.scale = s
+      root.style.setProperty('--dshw-scale', String(s))
+      scaleInput.value = String(s)
+      scaleNumber.value = String(scaleToDisplay(s))
       settle()
     }
     if (d && typeof d.vol === 'number') {
